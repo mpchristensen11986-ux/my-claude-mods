@@ -1,0 +1,65 @@
+{
+  "name": "decision-support",
+  "version": "0.2.1",
+  "description": "Watches your prompts and the session's own decision points and, when a second opinion would help, asks whether to use the built-in /advisor and with which model (or shows the command). Deterministic rules only: no model calls, no network, no prompt text kept; it never submits a prompt for you and never edits settings files.",
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Suggestions on",
+      "description": "Show advisor suggestions. /decision-support on|off overrides this per machine.",
+      "default": true
+    },
+    "mode": {
+      "type": "string",
+      "title": "Mode",
+      "description": "ask holds a qualifying prompt (or end-of-turn decision) and asks; auto-suggest only shows a toast with the /advisor command; off is silent. /decision-support mode <x> overrides this per machine.",
+      "default": "ask",
+      "options": [
+        "ask",
+        "auto-suggest",
+        "off"
+      ]
+    },
+    "sensitivity": {
+      "type": "string",
+      "title": "Sensitivity",
+      "description": "low suggests rarely, high suggests whenever there is a clear signal.",
+      "default": "medium",
+      "options": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "deepModel": {
+      "type": "string",
+      "title": "Deep model",
+      "description": "Advisor model suggested for security, contract and commercial risk.",
+      "default": "claude-fable-5-1"
+    },
+    "standardModel": {
+      "type": "string",
+      "title": "Standard model",
+      "description": "Advisor model suggested for design choices, risky actions, long plans and being stuck.",
+      "default": "claude-opus-5-5"
+    },
+    "quickModel": {
+      "type": "string",
+      "title": "Quick model",
+      "description": "Advisor model suggested for a fast sanity check.",
+      "default": "claude-haiku-5-5"
+    },
+    "stuckThreshold": {
+      "type": "number",
+      "title": "Stuck after N failed tool calls",
+      "description": "Suggest an advisor after this many tool calls in a row fail. 0 turns the stuck check off.",
+      "default": 3
+    },
+    "cooldownPrompts": {
+      "type": "number",
+      "title": "Prompts between suggestions",
+      "description": "Minimum number of prompts between two prompt-based suggestions.",
+      "default": 3
+    }
+  }
+}

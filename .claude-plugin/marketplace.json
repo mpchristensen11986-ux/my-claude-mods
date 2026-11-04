@@ -1,0 +1,13 @@
+{
+  "name": "my-claude-mods",
+  "owner": { "name": "Matt Christensen" },
+  "plugins": [
+    { "name": "side-chat-advisor", "source": "./side-chat-advisor", "description": "Suggests opening a Side Chat in Split View for tangent or lookup prompts." },
+    { "name": "subagent-advisor", "source": "./subagent-advisor", "description": "Asks whether to hand a broad, parallel or research-style prompt to subagents." },
+    { "name": "decision-support", "source": "./decision-support", "description": "Asks whether to use /advisor and suggests an advisor model." },
+    { "name": "long-session-kit", "source": "./long-session-kit", "description": "Context meter plus automatic handoff notes for long sessions." },
+    { "name": "ribbon-wdc", "source": "./ribbon-wdc", "description": "Fork of robonuggets/ribbon (MIT, Jay E | RoboNuggets): usage and prompt-cache band with theme-following colours." },
+    { "name": "commands-pane", "source": "./commands-pane", "description": "A pane listing slash commands by function, in collapsible groups; /commands opens it." },
+    { "name": "savvy-progress", "source": "./savvy-progress", "description": "Unmodified copy of johnnyvizz's savvy-progress (MIT): progress bar and /agents-info agents panel." }
+  ]
+}

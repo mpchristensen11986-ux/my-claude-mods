@@ -1,0 +1,39 @@
+{
+  "name": "side-chat-advisor",
+  "version": "0.1.0",
+  "description": "Watches each prompt before it is sent and, when it looks like a quick tangent or lookup better suited to a Side Chat, shows a brief non-blocking suggestion with the reason. Deterministic rules only: no model calls, never blocks or rewrites the prompt.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "description": "Suggest a Side Chat when a prompt looks like a quick tangent. /sidechat-advisor on|off overrides this for the current install.",
+      "default": true
+    },
+    "sensitivity": {
+      "type": "string",
+      "title": "Sensitivity",
+      "description": "low suggests only clear tangents, medium is balanced, high suggests more often.",
+      "options": ["low", "medium", "high"],
+      "default": "medium"
+    },
+    "showToast": {
+      "type": "boolean",
+      "title": "Show toast",
+      "description": "Show a short toast with the suggestion.",
+      "default": true
+    },
+    "showBand": {
+      "type": "boolean",
+      "title": "Show band above prompt",
+      "description": "Show a dismissible band above the prompt with the suggestion and reason.",
+      "default": true
+    },
+    "cooldown": {
+      "type": "number",
+      "title": "Cooldown (prompts)",
+      "description": "Minimum number of prompts between two suggestions.",
+      "default": 3
+    }
+  }
+}

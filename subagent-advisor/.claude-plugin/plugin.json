@@ -1,0 +1,39 @@
+{
+  "name": "subagent-advisor",
+  "version": "0.2.0",
+  "description": "Watches the prompt you submit and, when the task looks better delegated to subagents (broad search, independent parts, long research, large diff review, bulk reads), shows a brief toast saying why and which kind. Also nudges after many sequential Read/Grep/Glob calls in one turn. Heuristics only: no model calls, holds a qualifying prompt and asks (or auto-decides) whether to delegate; if the question fails the prompt goes through unchanged. When you choose subagents it can also queue the agents panel (/agents-info open, from the separate savvy-progress mod) and the engine's /tasks view, to run when that turn ends; both are skipped quietly where the session does not list them.",
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Advise on subagents",
+      "description": "Show subagent suggestions. /subagent-advisor on|off overrides this once used.",
+      "default": true
+    },
+    "mode": {
+      "type": "string",
+      "title": "When a prompt suits subagents",
+      "description": "ask: hold the prompt and ask (use subagents, continue, or switch to auto). auto-delegate: always add a subagent instruction without asking. auto-continue: never ask, toast only. off: silent. /subagent-advisor mode <x> overrides this once used.",
+      "default": "ask",
+      "options": ["ask", "auto-delegate", "auto-continue", "off"]
+    },
+    "sensitivity": {
+      "type": "string",
+      "title": "Sensitivity",
+      "description": "high suggests more often (one clear signal is enough), low only when several signals agree.",
+      "default": "medium",
+      "options": ["low", "medium", "high"]
+    },
+    "toolCallNudge": {
+      "type": "boolean",
+      "title": "Nudge after many Read/Grep/Glob calls",
+      "description": "Show one gentle toast per turn once the main thread has made many sequential Read, Grep or Glob calls.",
+      "default": true
+    },
+    "openViews": {
+      "type": "boolean",
+      "title": "Open the agents panel and background tasks",
+      "description": "After you choose subagents (Use subagents, Auto: always use subagents, or auto-delegate mode), queue /agents-info open (needs the savvy-progress mod) and the built-in /tasks, where the session lists them. They run when that turn ends. /subagent-advisor views on|off overrides this once used.",
+      "default": true
+    }
+  }
+}

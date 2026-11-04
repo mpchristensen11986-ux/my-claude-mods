@@ -1,0 +1,6 @@
+{
+  "name": "commands-pane",
+  "version": "0.1.0",
+  "description": "A /commands pane that lists the slash commands you can run, grouped by function, with collapsible groups that remember whether they were open or closed. The list is read from the session at run time. /commands text prints the same list as plain text. No network, no file access, no model calls, and nothing you type is kept.",
+  "types": "./types/index.d.ts"
+}

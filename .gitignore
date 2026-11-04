@@ -1,0 +1,7 @@
+node_modules/
+.claude/mods-logs/
+**/.claude/mods-logs/
+**/.in_use
+.DS_Store
+Thumbs.db
+.claude-plugin-tmp.json
