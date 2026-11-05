@@ -18,6 +18,10 @@ A set of Claude Code mods (interface and behaviour add-ons) that I built to work
 | [`ribbon-wdc`](ribbon-wdc/README.md) | Jay E \| RoboNuggets (fork by Matt Christensen) | Band showing usage left and whether the prompt cache is warm or cold. Theme-following colours. |
 | [`savvy-progress`](savvy-progress/README.md) | johnnyvizz (unmodified copy) | Progress bar and `/agents-info` agents panel showing what subagents are doing. |
 
+## User guide
+
+[`docs/user-guide.html`](docs/user-guide.html) is a single-file illustrated guide with a tab for each mod (what it is, what you get from it, how to use it, with screenshots). It is self-contained: download it and open it in a browser. GitHub shows the file as source, not as a page.
+
 ## How they fit together
 
 - **Ribbon and long-session-kit.** Ribbon shows whether the prompt cache is warm. long-session-kit writes a handoff before the cache goes cold, and its `cacheTtlMinutes` setting defaults to 60 to match Ribbon's model. Its context meter shows as a row under the Ribbon band.

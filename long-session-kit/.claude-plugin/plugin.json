@@ -1,6 +1,6 @@
 {
   "name": "long-session-kit",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Context meter band plus automatic handoffs for long sessions: at a first context threshold (default 50%), at a second one (default 70%, which also suggests /compact; it never runs it), when the prompt cache is about to go cold, and after an idle period. Handoffs (handoff-<date>.md and LATEST.md) are saved at the top level of the folder the session is linked to; /lsk folder picks another. If that folder is a git repository, add handoff-*.md and LATEST.md to its .gitignore.",
   "author": {
     "name": "Matt Christensen"

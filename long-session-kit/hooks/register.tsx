@@ -185,8 +185,12 @@ export function compactText(percent: number): string {
   return `Context at ${percent}%. A fresh handoff is saved. Consider /compact, or continue in a new chat with /lsk resume.`
 }
 
-// "handoff at 50%" or, with the second trigger in force, "handoff at 50% / 70%".
-export function thresholdText(cfg: Cfg): string {
+// "handoff at 50%" or, with the second trigger in force, "handoff at 50% / 70%". Once the context is past the first
+// threshold the text names what is still ahead: "next handoff at 70%", then "past the 70% handoff point".
+export function thresholdText(cfg: Cfg, percent?: number): string {
+  if (cfg.second > 0 && percent !== undefined && percent >= cfg.threshold) {
+    return percent >= cfg.second ? `past the ${cfg.second}% handoff point` : `next handoff at ${cfg.second}%`
+  }
   return cfg.second > 0 ? `handoff at ${cfg.threshold}% / ${cfg.second}%` : `handoff at ${cfg.threshold}%`
 }
 
@@ -824,7 +828,7 @@ export const register: Register = (on, options) => {
           {`${icon} ${meter.percent}%`}
         </Text>
         <Text dimColor>{` ${short(meter.tokens)}/${short(meter.window)}`}</Text>
-        {wide && <Text dimColor>{cfg.isEnabled ? `  ·  ${thresholdText(cfg)}` : '  ·  handoff off'}</Text>}
+        {wide && <Text dimColor>{cfg.isEnabled ? `  ·  ${thresholdText(cfg, meter.percent)}` : '  ·  handoff off'}</Text>}
         {compact && <Text bold>{'  ·  consider /compact'}</Text>}
         {wide && act > 0 && <Text dimColor>{`  ·  cache ${cacheText(cfg, now - act)}`}</Text>}
         {offer > 0 && <Text dimColor>{`  ·  handoff from ${ago(now - offer)}: `}</Text>}

@@ -773,12 +773,13 @@ test('band: both thresholds in the text, "consider /compact" only past the secon
   await begin($)
   await measure($, w, 55)
   const mid = await band($, 100)
-  expect(mid).toContain('handoff at 50% / 70%')
+  expect(mid).toContain('next handoff at 70%') // past the first threshold: the text names what is still ahead
+  expect(mid).not.toContain('handoff at 50%')
   expect(mid).not.toContain('/compact')
   await measure($, w, 75)
   const high = await band($, 100)
   expect(high).toContain('75%')
-  expect(high).toContain('handoff at 50% / 70%')
+  expect(high).toContain('past the 70% handoff point')
   expect(high).toContain('consider /compact')
   expect(await band($, 75)).not.toContain('consider /compact') // no room: the note is dropped, the toast has said it
   await lsk($, 'second off')
@@ -823,4 +824,14 @@ test('/lsk resume with nothing saved says where it looked', async ($, on) => {
   expect(said).toMatch(/^No handoff found\. Looked in: /)
   expect(said).toContain(ROOT)
   expect(said).toContain(DOCS)
+})
+
+test('the band names the next handoff once the first threshold is passed', () => {
+  const c = cfg()
+  expect(thresholdText(c)).toBe('handoff at 50% / 70%')
+  expect(thresholdText(c, 30)).toBe('handoff at 50% / 70%')
+  expect(thresholdText(c, 50)).toBe('next handoff at 70%')
+  expect(thresholdText(c, 66)).toBe('next handoff at 70%')
+  expect(thresholdText(c, 70)).toBe('past the 70% handoff point')
+  expect(thresholdText(cfg({ secondThreshold: 0 }), 66)).toBe('handoff at 50%')
 })
