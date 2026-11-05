@@ -1,7 +1,7 @@
 {
   "name": "long-session-kit",
-  "version": "0.2.0",
-  "description": "Context meter band plus automatic handoffs for long sessions: at a context threshold (default 50%), when the prompt cache is about to go cold, and after an idle period. Handoffs (handoff-<date>.md and LATEST.md) are saved at the top level of the folder the session is linked to; /lsk folder picks another. If that folder is a git repository, add handoff-*.md and LATEST.md to its .gitignore.",
+  "version": "0.3.0",
+  "description": "Context meter band plus automatic handoffs for long sessions: at a first context threshold (default 50%), at a second one (default 70%, which also suggests /compact; it never runs it), when the prompt cache is about to go cold, and after an idle period. Handoffs (handoff-<date>.md and LATEST.md) are saved at the top level of the folder the session is linked to; /lsk folder picks another. If that folder is a git repository, add handoff-*.md and LATEST.md to its .gitignore.",
   "author": {
     "name": "Matt Christensen"
   },
@@ -13,10 +13,16 @@
       "description": "Write a handoff once the context window is this full. /lsk threshold <n> overrides it.",
       "default": 50
     },
+    "secondThreshold": {
+      "type": "number",
+      "title": "Second context threshold (%)",
+      "description": "Write another handoff once the context window is this full, and show a toast suggesting /compact (the kit never runs it). Must be greater than the context threshold, otherwise it is ignored (/lsk status says so). 0 turns the second trigger off. /lsk second <n|off> overrides it.",
+      "default": 70
+    },
     "enabled": {
       "type": "boolean",
       "title": "Automatic handoffs",
-      "description": "Write handoffs automatically (context threshold, cache warning, idle). /lsk on|off overrides it.",
+      "description": "Write handoffs automatically (context thresholds, cache warning, idle). /lsk on|off overrides it.",
       "default": true
     },
     "idleMinutes": {

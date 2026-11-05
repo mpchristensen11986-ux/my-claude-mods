@@ -2,6 +2,8 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import {
   cleanPath,
+  compactText,
+  decideContext,
   decideIdle,
   isAbsolutePath,
   joinPath,
@@ -11,6 +13,8 @@ import {
   splitCommand,
   splitReply,
   statusText,
+  thresholdText,
+  toSecond,
 } from './register'
 
 const cfg = (o: Record<string, unknown> = {}) => readCfg(o, undefined)
@@ -82,6 +86,65 @@ test('statusText is the compact meter shown while a survey holds the band', () =
   expect(statusText({ percent: 22, tokens: 222_000, window: 1_000_000 })).toBe('22% 222k/1M')
 })
 
+test('second threshold: default 70, 0 or "off" is off, a stored 0 beats the setting, junk falls back', () => {
+  expect(cfg().secondRaw).toBe(70)
+  expect(cfg().second).toBe(70)
+  expect(cfg({ secondThreshold: 85 }).second).toBe(85)
+  expect(cfg({ secondThreshold: 0 }).second).toBe(0)
+  expect(cfg({ secondThreshold: 'off' }).second).toBe(0)
+  expect(cfg({ secondThreshold: 'abc' }).second).toBe(70)
+  expect(cfg({ secondThreshold: 150 }).second).toBe(70)
+  expect(cfg({ secondThreshold: -5 }).second).toBe(70)
+  // The person's own override is stored; a stored 0 ("off") must not fall through to the setting.
+  expect(readCfg({ secondThreshold: 80 }, { secondThreshold: 0 }).second).toBe(0)
+  expect(readCfg({ secondThreshold: 80 }, { secondThreshold: 90 }).second).toBe(90)
+  expect(readCfg({ secondThreshold: 80 }, { threshold: 60 }).second).toBe(80)
+  expect(toSecond('off')).toBe(0)
+  expect(toSecond('0')).toBe(0)
+  expect(toSecond('70%')).toBe(70)
+  expect(toSecond(0.5)).toBeUndefined()
+  expect(toSecond(100)).toBeUndefined()
+  expect(toSecond('')).toBeUndefined()
+})
+
+test('second threshold must be above the first, otherwise it is ignored (and kept as set)', () => {
+  const same = cfg({ secondThreshold: 50 })
+  expect([same.secondRaw, same.second]).toEqual([50, 0])
+  const below = cfg({ secondThreshold: 40 })
+  expect([below.secondRaw, below.second]).toEqual([40, 0])
+  // The default 70 is not above a first threshold of 80: judged on every read.
+  const raised = readCfg({}, { threshold: 80 })
+  expect([raised.secondRaw, raised.second]).toEqual([70, 0])
+  expect(readCfg({ threshold: 30, secondThreshold: 40 }, undefined).second).toBe(40)
+})
+
+test('decideContext: crossings, a jump over both, re-arming each latch, off and disabled', () => {
+  const step = (p: number, fired = false, firedSecond = false, o: Record<string, unknown> = {}) =>
+    decideContext(cfg(o), p, fired, firedSecond)
+  expect(step(49)).toEqual({ fired: false, firedSecond: false })
+  expect(step(50)).toEqual({ fired: true, firedSecond: false, write: 'first' })
+  expect(step(69, true)).toEqual({ fired: true, firedSecond: false })
+  expect(step(70, true)).toEqual({ fired: true, firedSecond: true, write: 'second' })
+  expect(step(85)).toEqual({ fired: true, firedSecond: true, write: 'second' }) // one jump over both
+  expect(step(90, true, true)).toEqual({ fired: true, firedSecond: true }) // already handed off
+  expect(step(60, true, true)).toEqual({ fired: true, firedSecond: false }) // back under 70: second re-arms only
+  expect(step(40, true, true)).toEqual({ fired: false, firedSecond: false }) // back under 50: both re-arm
+  // First latch cleared (say /lsk threshold) while above the second, whose handoff covers it: no extra handoff.
+  expect(step(75, false, true)).toEqual({ fired: true, firedSecond: true })
+  expect(step(75, true, false, { secondThreshold: 0 })).toEqual({ fired: true, firedSecond: false })
+  expect(step(75, false, false, { secondThreshold: 0 })).toEqual({ fired: true, firedSecond: false, write: 'first' })
+  expect(step(75, false, false, { secondThreshold: 40 })).toEqual({ fired: true, firedSecond: false, write: 'first' })
+  expect(step(75, false, false, { enabled: false })).toEqual({ fired: false, firedSecond: false })
+  expect(step(40, true, true, { enabled: false })).toEqual({ fired: false, firedSecond: false })
+})
+
+test('the compact suggestion and the band wording', () => {
+  expect(compactText(72)).toBe('Context at 72%. A fresh handoff is saved. Consider /compact, or continue in a new chat with /lsk resume.')
+  expect(thresholdText(cfg())).toBe('handoff at 50% / 70%')
+  expect(thresholdText(cfg({ secondThreshold: 0 }))).toBe('handoff at 50%')
+  expect(thresholdText(cfg({ secondThreshold: 40 }))).toBe('handoff at 50%')
+})
+
 // ---- a world beneath the plugin: an in-memory file system, store, clock and dialogs ----------
 
 function addParents(dirs: Set<string>, path: string) {
@@ -113,6 +176,7 @@ function world(on: any, o: Opts = {}) {
     asked: [] as { question: string; labels: string[] }[],
     answer: 'dismiss', // what the folder question is answered with; 'dismiss' closes it
     forkCount: 0,
+    hold: undefined as Promise<void> | undefined, // while set, a fork waits for it: a handoff stays in flight
   }
   for (const [path, text] of Object.entries(o.files ?? {})) {
     w.files.set(key(path), { text, at: 1 })
@@ -147,10 +211,12 @@ function world(on: any, o: Opts = {}) {
     addParents(w.dirs, e.path)
     return { value: undefined }
   })
-  on('model.fork', () => {
+  on('model.fork', async () => {
     w.forkCount++
+    if (w.hold) await w.hold
     return { value: { isAnswered: true, text: 'LATEST: Summary.\n\n## What was done\nx', usage: {} } }
   })
+  on('session.measure', (_: any, e: any) => ({ changed: e.changed }))
   on('prompt.submit', (_: any, e: any) => {
     w.submitted.push(e.text)
     return { text: e.text, context: e.context }
@@ -452,6 +518,274 @@ test('the session folder itself missing: nothing written, no folder made', async
   expect(await lsk($, 'now')).toBe('No handoff written (no folder).')
   expect(w.written).toHaveLength(0)
   expect(w.toasts.some(t => t.includes(`the session folder ${ROOT} was not found`))).toBe(true)
+})
+
+// ---- the two context triggers --------------------------------------------------------------
+
+type World = ReturnType<typeof world>
+
+// One context measurement, then a second of clock so the handoff the crossing scheduled (from a timer) runs.
+async function measure($: any, w: World, percent: number) {
+  await $.session.measure({
+    context: { window: 1_000_000, tokens: percent * 10_000, percent },
+    rateLimits: [],
+    changed: ['context'],
+  })
+  await w.clock.advance(1000)
+}
+
+const handoffFiles = (w: World) => w.written.filter(p => /\\handoff-[^\\]+\.md$/.test(p))
+const compactToasts = (w: World) => w.toasts.filter(t => /Consider \/compact/.test(t))
+const textOf = (w: World, path: string) => w.files.get(key(path))?.text ?? ''
+const latestPointer = (w: World) => textOf(w, `${ROOT}\\LATEST.md`).split('\n')[0]
+const baseName = (p: string) => p.slice(p.lastIndexOf('\\') + 1)
+
+test('crossing 50 then 70: two handoffs (LATEST.md follows the second) and one /compact suggestion', async ($, on) => {
+  const w = world(on)
+  await begin($)
+  await measure($, w, 40)
+  expect(w.forkCount).toBe(0)
+  await measure($, w, 55)
+  expect(w.forkCount).toBe(1)
+  expect(compactToasts(w)).toHaveLength(0) // the first crossing only writes a handoff
+  const first = handoffFiles(w)[0] ?? ''
+  expect(latestPointer(w)).toBe(baseName(first))
+  expect(textOf(w, first)).toContain('Trigger: context at 55%, threshold 50%')
+
+  await measure($, w, 75)
+  expect(w.forkCount).toBe(2)
+  const files = handoffFiles(w)
+  expect(files).toHaveLength(2)
+  const second = files[1] ?? ''
+  expect(second).not.toBe(first)
+  expect(files.every(p => p.startsWith(`${ROOT}\\`) && !p.slice(ROOT.length + 1).includes('\\'))).toBe(true)
+  expect(textOf(w, second)).toContain('Trigger: context at 75%, second threshold 70%')
+  expect(latestPointer(w)).toBe(baseName(second)) // LATEST.md now names the second handoff
+  expect(compactToasts(w)).toEqual([compactText(75)])
+  expect(w.submitted).toHaveLength(0) // a suggestion only: nothing is submitted for the person
+})
+
+test('one big jump over both thresholds: ONE handoff and the /compact suggestion', async ($, on) => {
+  const w = world(on)
+  await begin($)
+  await measure($, w, 40)
+  await measure($, w, 85)
+  expect(w.forkCount).toBe(1)
+  expect(handoffFiles(w)).toHaveLength(1)
+  expect(textOf(w, handoffFiles(w)[0] ?? '')).toContain('Trigger: context at 85%, thresholds 50% and 70%')
+  expect(compactToasts(w)).toEqual([compactText(85)])
+  await measure($, w, 90) // still the same crossing
+  expect(w.forkCount).toBe(1)
+  expect(compactToasts(w)).toHaveLength(1)
+})
+
+test('the suggestion shows once per crossing, not on every measurement', async ($, on) => {
+  const w = world(on)
+  await begin($)
+  await measure($, w, 55)
+  for (const p of [71, 72, 73, 74, 80, 99]) await measure($, w, p)
+  expect(w.forkCount).toBe(2)
+  expect(compactToasts(w)).toHaveLength(1)
+})
+
+test('both triggers re-arm: the second below 70, both below 50 (a compaction)', async ($, on) => {
+  const w = world(on)
+  await begin($)
+  await measure($, w, 55)
+  await measure($, w, 75)
+  expect([w.forkCount, compactToasts(w).length]).toEqual([2, 1])
+  await measure($, w, 80)
+  expect([w.forkCount, compactToasts(w).length]).toEqual([2, 1])
+  await measure($, w, 60) // under 70, still over 50: the second is armed again, the first is not
+  expect(w.forkCount).toBe(2)
+  await measure($, w, 72)
+  expect([w.forkCount, compactToasts(w).length]).toEqual([3, 2])
+  expect(textOf(w, handoffFiles(w)[2] ?? '')).toContain('Trigger: context at 72%, second threshold 70%')
+  await measure($, w, 30) // a compaction: both armed
+  await measure($, w, 55)
+  expect([w.forkCount, compactToasts(w).length]).toEqual([4, 2]) // the first trigger again, no suggestion
+  await measure($, w, 71)
+  expect([w.forkCount, compactToasts(w).length]).toEqual([5, 3])
+})
+
+test('secondThreshold 0 turns the second trigger off: first handoff only, no suggestion', { options: { secondThreshold: 0 } }, async ($, on) => {
+  const w = world(on)
+  await begin($)
+  await measure($, w, 55)
+  await measure($, w, 75)
+  await measure($, w, 95)
+  expect(w.forkCount).toBe(1)
+  expect(compactToasts(w)).toHaveLength(0)
+  const status = await lsk($, 'status')
+  expect(status).toContain('Handoff threshold: first 50%. Second threshold: off')
+})
+
+test('a second threshold not above the first is ignored, and status says so', { options: { secondThreshold: 40 } }, async ($, on) => {
+  const w = world(on)
+  await begin($)
+  const status = await lsk($, 'status')
+  expect(status).toContain('Second threshold 40% is ignored: it must be above the first threshold (50%)')
+  await measure($, w, 75) // a single handoff for the first trigger, no suggestion
+  expect(w.forkCount).toBe(1)
+  expect(compactToasts(w)).toHaveLength(0)
+  expect(await lsk($, 'threshold 30')).toBe('Handoff threshold set to 30%.') // 40 is above 30 now
+  expect(await lsk($, 'status')).toContain('Handoff thresholds: first 30%, second 40%')
+})
+
+test('raising the first threshold past the default 70 ignores the second, and the command says so', async ($, on) => {
+  world(on)
+  await begin($)
+  const said = await lsk($, 'threshold 80')
+  expect(said).toContain('Handoff threshold set to 80%. The second threshold (70%) is now ignored')
+  expect(await lsk($, 'status')).toContain('Second threshold 70% is ignored: it must be above the first threshold (80%)')
+})
+
+test('/lsk second overrides the setting: a number, off, a value that is too low, and usage', async ($, on) => {
+  const w = world(on)
+  await begin($)
+  expect(await lsk($, 'second')).toMatch(/^Usage is \/lsk second <1-99\|off>\. Handoff thresholds: first 50%, second 70%/)
+  expect(await lsk($, 'second abc')).toMatch(/^Usage is \/lsk second/)
+  expect(await lsk($, 'second 100')).toMatch(/^Usage is \/lsk second/)
+  expect(await lsk($, 'second 80')).toMatch(/^Second threshold set to 80%\. At that fill a fresh handoff is saved and \/compact is suggested/)
+  expect(await lsk($, 'status')).toContain('Handoff thresholds: first 50%, second 80%')
+  await measure($, w, 55)
+  await measure($, w, 75) // under the new second threshold
+  expect([w.forkCount, compactToasts(w).length]).toEqual([1, 0])
+  await measure($, w, 82)
+  expect([w.forkCount, compactToasts(w).length]).toEqual([2, 1])
+  expect(compactToasts(w)[0]).toBe(compactText(82))
+
+  expect(await lsk($, 'second 40')).toMatch(/^Second threshold set to 40%, but it is ignored: it must be above the first threshold \(50%\)/)
+  expect(await lsk($, 'status')).toContain('Second threshold 40% is ignored')
+  expect(await lsk($, 'second off')).toBe('Second threshold is off: no second handoff and no /compact suggestion.')
+  expect(await lsk($, 'status')).toContain('Second threshold: off')
+  await measure($, w, 90)
+  expect([w.forkCount, compactToasts(w).length]).toEqual([2, 1])
+
+  expect(await lsk($, 'second 60')).toMatch(/^Second threshold set to 60%\./) // back on, armed again
+  await measure($, w, 91)
+  expect([w.forkCount, compactToasts(w).length]).toEqual([3, 2])
+})
+
+test('a stored /lsk second override beats the setting in a new session', { options: { secondThreshold: 90 } }, async ($, on) => {
+  const w = world(on, { store: { settings: { secondThreshold: 0 } } })
+  await begin($)
+  expect(await lsk($, 'status')).toContain('Second threshold: off')
+  await measure($, w, 95)
+  expect([w.forkCount, compactToasts(w).length]).toEqual([1, 0])
+})
+
+test('status shows both thresholds and when the last handoff was written', async ($, on) => {
+  world(on)
+  await begin($)
+  const before = await lsk($, 'status')
+  expect(before).toContain('Handoff thresholds: first 50%, second 70% (the second also suggests /compact; it never runs it).')
+  expect(before).toContain('No handoff written this session.')
+  expect(before).toContain('second <n|off>')
+  await lsk($, 'now')
+  const after = await lsk($, 'status')
+  expect(after).toMatch(/Last handoff: \d{2}\/\d{2}\/\d{4} \d{2}:\d{2} \(just now\), /)
+  expect(after).toContain('(/lsk now)')
+})
+
+test('no handoff and no suggestion for a trivial session', async ($, on) => {
+  const w = world(on, { prompts: 1 })
+  await begin($)
+  for (const p of [55, 75, 90]) await measure($, w, p)
+  expect(w.forkCount).toBe(0)
+  expect(w.written).toHaveLength(0)
+  expect(compactToasts(w)).toHaveLength(0)
+  expect(w.toasts).toHaveLength(0)
+})
+
+test('with automatic handoffs off there is no handoff and no suggestion; switching on arms it again', async ($, on) => {
+  const w = world(on)
+  await begin($)
+  await lsk($, 'off')
+  await measure($, w, 75)
+  expect(w.forkCount).toBe(0)
+  expect(compactToasts(w)).toHaveLength(0)
+  await lsk($, 'on')
+  await measure($, w, 76)
+  expect([w.forkCount, compactToasts(w).length]).toEqual([1, 1])
+})
+
+test('the second handoff falls back to the session folder like the first, and the suggestion still shows', async ($, on) => {
+  const w = world(on, { store: { folders: { 'c:/work/my project': 'D:\\Gone' } } })
+  await begin($)
+  await measure($, w, 75)
+  expect(handoffFiles(w).every(p => p.startsWith(`${ROOT}\\`))).toBe(true)
+  expect(w.toasts.some(t => t.includes('D:\\Gone was not found, so the session folder was used.'))).toBe(true)
+  expect(compactToasts(w)).toEqual([compactText(75)])
+})
+
+test('no folder to write to: no handoff, the folder toast, and no "handoff is saved" suggestion', async ($, on) => {
+  const w = world(on, { dirs: [] })
+  await begin($)
+  await measure($, w, 75)
+  expect(w.forkCount).toBe(0)
+  expect(w.written).toHaveLength(0)
+  expect(w.toasts.some(t => t.includes('Handoff not saved'))).toBe(true)
+  expect(compactToasts(w)).toHaveLength(0)
+})
+
+test('a second crossing while the first handoff is still being written is not lost', async ($, on) => {
+  const w = world(on)
+  let release = () => {}
+  w.hold = new Promise<void>(resolve => {
+    release = resolve
+  })
+  await begin($)
+  await measure($, w, 55) // the first handoff is now in flight (its fork is held)
+  expect(w.forkCount).toBe(1)
+  await measure($, w, 75) // skipped as busy (no double handoff), but the latch is given back
+  expect(w.forkCount).toBe(1)
+  expect(compactToasts(w)).toHaveLength(0)
+  w.hold = undefined
+  release()
+  await w.clock.advance(1000)
+  expect(handoffFiles(w)).toHaveLength(1) // the first one finished
+  await measure($, w, 76) // the next measurement tries the second again
+  expect(w.forkCount).toBe(2)
+  expect(handoffFiles(w)).toHaveLength(2)
+  expect(compactToasts(w)).toEqual([compactText(76)])
+})
+
+// ---- the band ------------------------------------------------------------------------------
+
+async function band($: any, columns: number) {
+  const ui = await $.ui.mount({
+    plugin: 'long-session-kit',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    requestId: 'band',
+    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: columns, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+  })
+  const texts: string[] = []
+  for (const el of await ui.findAll({ type: 'Text' })) texts.push(el.text)
+  await ui.unmount()
+  return texts.join('')
+}
+
+test('band: both thresholds in the text, "consider /compact" only past the second and only with room', async ($, on) => {
+  const w = world(on)
+  on('ui.render', () => ({ type: 'engine', ref: 0 }) as never) // Claude Code's own placeholder for the band
+  await begin($)
+  await measure($, w, 55)
+  const mid = await band($, 100)
+  expect(mid).toContain('handoff at 50% / 70%')
+  expect(mid).not.toContain('/compact')
+  await measure($, w, 75)
+  const high = await band($, 100)
+  expect(high).toContain('75%')
+  expect(high).toContain('handoff at 50% / 70%')
+  expect(high).toContain('consider /compact')
+  expect(await band($, 75)).not.toContain('consider /compact') // no room: the note is dropped, the toast has said it
+  await lsk($, 'second off')
+  const off = await band($, 100)
+  expect(off).toContain('handoff at 50%')
+  expect(off).not.toContain('/ 70%')
+  expect(off).not.toContain('consider /compact')
 })
 
 // ---- /lsk resume ---------------------------------------------------------------------------

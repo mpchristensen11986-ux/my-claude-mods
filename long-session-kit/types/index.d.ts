@@ -13,8 +13,10 @@ declare module "claude-code" {
       lastActivityAt: number;
       /** The lastActivityAt value a handoff already covers: one handoff per idle period. */
       coveredAt: number;
-      /** Context threshold already crossed and handed off (re-armed below it). */
+      /** First context threshold already crossed and handed off (re-armed below it). */
       fired: boolean;
+      /** Second context threshold already crossed, handed off and /compact suggested (re-armed below it). */
+      firedSecond: boolean;
       busy: boolean;
       last: LskSaved | null;
       meter: LskMeter | null;

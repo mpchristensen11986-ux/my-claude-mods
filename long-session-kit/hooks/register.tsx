@@ -6,12 +6,18 @@
 //
 // Triggers (one handoff = one `$.model.fork` call):
 //   1. context fill reaches `threshold` % (default 50), once per crossing;
-//   2. the session has been idle `idleMinutes` (default 30);
-//   3. the prompt cache has `cacheWarningMinutesLeft` (default 10) of its
+//   2. context fill reaches `secondThreshold` % (default 70, 0 = off, must be
+//      above `threshold` or it is ignored), once per crossing: a fresh handoff
+//      AND a toast suggesting /compact. The mod only suggests it, never runs it.
+//      A single measurement that jumps over both writes ONE handoff (and shows
+//      the suggestion). Each trigger re-arms when the fill falls back below its
+//      own threshold (after a compaction, say);
+//   3. the session has been idle `idleMinutes` (default 30);
+//   4. the prompt cache has `cacheWarningMinutesLeft` (default 10) of its
 //      `cacheTtlMinutes` (default 60) left, i.e. idle >= ttl - warning (50).
-// 2 and 3 share one rule: at most one handoff per idle period (a period ends
-// when the next main-thread turn completes). With the defaults, 2 fires first
-// (30 < 50) and 3 never fires; 3 only fires first if idleMinutes > ttl - warning.
+// 3 and 4 share one rule: at most one handoff per idle period (a period ends
+// when the next main-thread turn completes). With the defaults, 3 fires first
+// (30 < 50) and 4 never fires; 4 only fires first if idleMinutes > ttl - warning.
 //
 // Where a handoff goes (first match wins), for the session's project root
 // (`$.session.root()`, the folder the session is linked to):
@@ -30,6 +36,7 @@ const RUNNING = { plugin: 'long-session-kit', key: 'running' } as const
 const LAST_ACTIVITY = { plugin: 'long-session-kit', key: 'lastActivityAt' } as const
 const COVERED = { plugin: 'long-session-kit', key: 'coveredAt' } as const
 const FIRED = { plugin: 'long-session-kit', key: 'fired' } as const
+const FIRED_SECOND = { plugin: 'long-session-kit', key: 'firedSecond' } as const
 const BUSY = { plugin: 'long-session-kit', key: 'busy' } as const
 const LAST = { plugin: 'long-session-kit', key: 'last' } as const
 const METER = { plugin: 'long-session-kit', key: 'meter' } as const
@@ -40,6 +47,10 @@ const TICK_MS = 60_000
 // Where 0.1.0 kept handoffs, and the base of the "Documents" choice in /lsk folder.
 const FALLBACK_DIR = 'C:\\Users\\Example\\Documents\\Claude Handoffs'
 const RESUME_CAP = 60_000
+const SECOND_DEFAULT = 70
+// Band note and toast for the second trigger. The mod suggests /compact; it never runs it.
+const COMPACT_TOAST_MS = 12_000
+const COMPACT_NOTE_COLUMNS = 90
 const FOLDERS_KEY = 'folders'
 const SESSION_LABEL = 'Session folder (default)'
 const GITIGNORE_NOTE =
@@ -65,6 +76,10 @@ Rules: use only facts from this conversation and mark anything assumed. Never in
 
 export type Cfg = {
   threshold: number
+  /** The second context threshold as set: 0 = off. Not yet checked against `threshold`. */
+  secondRaw: number
+  /** The second threshold in force: 0 when it is off or ignored (not above `threshold`). */
+  second: number
   isEnabled: boolean
   idleMinutes: number
   cacheWarn: number
@@ -96,11 +111,25 @@ export function toThreshold(v: unknown): number | undefined {
   return n < 0 ? undefined : Math.round(n)
 }
 
+// The second threshold: 1 to 99, or 0 / "off" for off. Anything else is not a setting (undefined),
+// so the next source applies. 0 is a real value here, so chain these with `??`, never `||`.
+export function toSecond(v: unknown): number | undefined {
+  if (typeof v === 'string' && /^(off|none|never)$/i.test(v.trim())) return 0
+  const n = num(v, -1, 0, 99)
+  if (n < 0 || (n > 0 && n < 1)) return undefined
+  return Math.round(n)
+}
+
 export function readCfg(options: Record<string, unknown> | undefined, stored: unknown): Cfg {
   const o = options ?? {}
   const s = stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored as Record<string, unknown>) : {}
+  const threshold = toThreshold(s.threshold) ?? toThreshold(o.threshold) ?? 50
+  const secondRaw = toSecond(s.secondThreshold) ?? toSecond(o.secondThreshold) ?? SECOND_DEFAULT
   return {
-    threshold: toThreshold(s.threshold) ?? toThreshold(o.threshold) ?? 50,
+    threshold,
+    secondRaw,
+    // Judged here, on every read, so a later /lsk threshold that passes it switches it off again.
+    second: secondRaw > threshold ? secondRaw : 0,
     isEnabled: typeof s.isEnabled === 'boolean' ? s.isEnabled : o.enabled !== false,
     idleMinutes: num(o.idleMinutes, 30),
     cacheWarn: num(o.cacheWarningMinutesLeft, 10),
@@ -124,6 +153,52 @@ export function decideIdle(cfg: Cfg, idleMs: number): IdleDecision {
     return { fire: true, reason: `prompt cache about ${left} min from going cold` }
   }
   return { fire: false, reason: '' }
+}
+
+export type ContextStep = {
+  /** The first-threshold latch after this measurement. */
+  fired: boolean
+  /** The second-threshold latch after this measurement. */
+  firedSecond: boolean
+  /** The handoff to write now, if any. 'second' also covers one measurement that jumps over both. */
+  write?: 'first' | 'second'
+}
+
+// Decides what one context measurement does. Pure, so the crossing / re-arm rules are testable.
+// Each latch lets go once the fill is back under its own threshold, so a compaction that lands
+// between the two re-arms only the second.
+export function decideContext(cfg: Cfg, percent: number, fired: boolean, firedSecond: boolean): ContextStep {
+  const aboveSecond = cfg.second > 0 && percent >= cfg.second
+  const first = percent < cfg.threshold ? false : fired
+  const second = aboveSecond ? firedSecond : false
+  if (!cfg.isEnabled) return { fired: first, firedSecond: second }
+  if (aboveSecond && !second) return { fired: true, firedSecond: true, write: 'second' }
+  if (percent >= cfg.threshold && !first) {
+    // Above the second threshold, its handoff already covers this: only the latch is set.
+    return aboveSecond ? { fired: true, firedSecond: second } : { fired: true, firedSecond: second, write: 'first' }
+  }
+  return { fired: first, firedSecond: second }
+}
+
+// The compact suggestion shown with the second handoff. It only suggests: the mod never runs /compact.
+export function compactText(percent: number): string {
+  return `Context at ${percent}%. A fresh handoff is saved. Consider /compact, or continue in a new chat with /lsk resume.`
+}
+
+// "handoff at 50%" or, with the second trigger in force, "handoff at 50% / 70%".
+export function thresholdText(cfg: Cfg): string {
+  return cfg.second > 0 ? `handoff at ${cfg.threshold}% / ${cfg.second}%` : `handoff at ${cfg.threshold}%`
+}
+
+// Status text for the two thresholds: both, or why the second one is off or ignored.
+export function thresholdLine(cfg: Cfg): string {
+  if (cfg.second > 0) {
+    return `Handoff thresholds: first ${cfg.threshold}%, second ${cfg.second}% (the second also suggests /compact; it never runs it).`
+  }
+  if (cfg.secondRaw === 0) {
+    return `Handoff threshold: first ${cfg.threshold}%. Second threshold: off (/lsk second <n> turns it on).`
+  }
+  return `Handoff threshold: first ${cfg.threshold}%. Second threshold ${cfg.secondRaw}% is ignored: it must be above the first threshold (${cfg.threshold}%). Change one with /lsk threshold <n> or /lsk second <n|off>.`
 }
 
 export function projectName(cwd: string): string {
@@ -489,6 +564,31 @@ async function writeHandoff(
   }
 }
 
+// The handoff a context crossing asks for, then (second threshold only, and only once a handoff
+// is really saved) the /compact suggestion. A skipped handoff (trivial session, no folder, a
+// failed fork) shows no suggestion, as its reason is already reported or there is nothing to
+// suggest. Skips that mean "not yet" give the latch back so the next measurement tries again:
+// the fork was not ready (either trigger), or another handoff was being written (second only,
+// so a crossing that happens mid-handoff is not lost).
+async function contextHandoff($: Eng, opts: Opts, percent: number, write: 'first' | 'second', reason: string): Promise<void> {
+  try {
+    const r = await writeHandoff($, opts, reason, false)
+    if (r.path) {
+      if (write === 'second') $.ui.toast(compactText(percent), { timeoutMs: COMPACT_TOAST_MS })
+      return
+    }
+    if (r.skipped === 'nothing-to-fork') {
+      // Only the latch of the trigger that asked: the retry's Trigger line then names the right threshold.
+      if (write === 'first') await $.state.set(FIRED, false)
+      else await $.state.set(FIRED_SECOND, false)
+    } else if (r.skipped === 'busy' && write === 'second') {
+      await $.state.set(FIRED_SECOND, false)
+    }
+  } catch (err) {
+    $.ui.log(`long-session-kit: context handoff failed (${(err as Error)?.message ?? err})`)
+  }
+}
+
 async function tick($: Eng, opts: Opts): Promise<void> {
   try {
     $.ui.invalidate('ui.render') // refreshes the cache countdown in the band
@@ -517,8 +617,8 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     await $.command.register({
       name: 'lsk',
-      description: 'Long session kit: handoff now | on | off | status | threshold <n> | folder | resume',
-      argumentHint: '[now|on|off|status|threshold <n>|folder [path|reset|status]|resume]',
+      description: 'Long session kit: handoff now | on | off | status | threshold <n> | second <n|off> | folder | resume',
+      argumentHint: '[now|on|off|status|threshold <n>|second <n|off>|folder [path|reset|status]|resume]',
     })
     const root = await $.session.root().catch(() => e.cwd)
     await $.state.set(ROOT, root)
@@ -563,6 +663,7 @@ export const register: Register = (on, options) => {
       await $.state.set(LAST_ACTIVITY, 0)
       await $.state.set(COVERED, 0)
       await $.state.set(FIRED, false)
+      await $.state.set(FIRED_SECOND, false)
       await $.state.set(METER, null)
     }
     return next(e)
@@ -577,19 +678,22 @@ export const register: Register = (on, options) => {
 
     const cfg = await getCfg($, opts)
     const fired = (await $.state.get(FIRED)).value === true
-    if (percent < cfg.threshold) {
-      if (fired) await $.state.set(FIRED, false) // re-arm after a compaction or /clear
-      return result
-    }
-    if (fired || !cfg.isEnabled) return result
-    await $.state.set(FIRED, true)
-    const reason = `context at ${percent}%, threshold ${cfg.threshold}%`
+    const firedSecond = (await $.state.get(FIRED_SECOND)).value === true
+    const step = decideContext(cfg, percent, fired, firedSecond)
+    // Each latch re-arms on its own, after a compaction or /clear takes the fill below its threshold.
+    if (step.fired !== fired) await $.state.set(FIRED, step.fired)
+    if (step.firedSecond !== firedSecond) await $.state.set(FIRED_SECOND, step.firedSecond)
+    const write = step.write
+    if (write === undefined) return result
+    const reason =
+      write === 'first'
+        ? `context at ${percent}%, threshold ${cfg.threshold}%`
+        : fired
+          ? `context at ${percent}%, second threshold ${cfg.second}%`
+          : `context at ${percent}%, thresholds ${cfg.threshold}% and ${cfg.second}%`
     // From a timer: the fork must not run inside this dispatch.
     $.clock.after(0, () => {
-      void writeHandoff($, opts, reason, false).then(async r => {
-        // Nothing saved because the fork was not ready: allow the next measurement to retry.
-        if (!r.path && r.skipped === 'nothing-to-fork') await $.state.set(FIRED, false)
-      })
+      void contextHandoff($, opts, percent, write, reason)
     })
     return result
   })
@@ -610,11 +714,14 @@ export const register: Register = (on, options) => {
       const cache = act === 0 ? 'no response yet' : cacheText(cfg, now - act)
       return {
         text: [
-          `Long session kit is ${cfg.isEnabled ? 'on' : 'off'}. Context ${meter ? meter.percent + '%' : 'not measured yet'}, handoff at ${cfg.threshold}%.`,
+          `Long session kit is ${cfg.isEnabled ? 'on' : 'off'}. Context ${meter ? meter.percent + '%' : 'not measured yet'}.`,
+          thresholdLine(cfg),
           `Idle handoff after ${cfg.idleMinutes || 'never'} min; cache warning ${cfg.cacheWarn || 'off'} min before the ${cfg.cacheTtl} min cache expires. Cache: ${cache}.`,
-          last ? `Last handoff: ${last.path}, ${ago(now - last.at)} (${last.reason}).` : 'No handoff written this session.',
+          last
+            ? `Last handoff: ${humanTime(last.at)} (${ago(now - last.at)}), ${last.path} (${last.reason}).`
+            : 'No handoff written this session.',
           ...(root ? await folderLines($, cfg, root) : ['Handoff folder: the session has no folder yet.']),
-          'Commands: /lsk now, on, off, status, threshold <n>, folder [<path>|reset|status], resume.',
+          'Commands: /lsk now, on, off, status, threshold <n>, second <n|off>, folder [<path>|reset|status], resume.',
         ].join('\n'),
       }
     }
@@ -629,7 +736,27 @@ export const register: Register = (on, options) => {
       if (n === undefined) return { text: 'Usage is /lsk threshold <1-99>' }
       await $.store.set('settings', { ...base, threshold: n })
       await $.state.set(FIRED, false)
-      return { text: `Handoff threshold set to ${n}%.` }
+      const next = readCfg(opts, { ...base, threshold: n })
+      const note =
+        next.secondRaw > 0 && next.second === 0
+          ? ` The second threshold (${next.secondRaw}%) is now ignored because it must be above the first. Change it with /lsk second <n|off>.`
+          : ''
+      return { text: `Handoff threshold set to ${n}%.${note}` }
+    }
+
+    if (verb === 'second') {
+      const n = value === '' ? undefined : toSecond(value)
+      if (n === undefined) return { text: `Usage is /lsk second <1-99|off>. ${thresholdLine(cfg)}` }
+      await $.store.set('settings', { ...base, secondThreshold: n })
+      await $.state.set(FIRED_SECOND, false)
+      const next = readCfg(opts, { ...base, secondThreshold: n })
+      if (n === 0) return { text: 'Second threshold is off: no second handoff and no /compact suggestion.' }
+      if (next.second === 0) {
+        return {
+          text: `Second threshold set to ${n}%, but it is ignored: it must be above the first threshold (${next.threshold}%). Change one with /lsk threshold <n> or /lsk second <n|off>.`,
+        }
+      }
+      return { text: `Second threshold set to ${n}%. At that fill a fresh handoff is saved and /compact is suggested (the kit never runs it).` }
     }
 
     if (verb === 'folder') return folderCommand($, opts, rest)
@@ -668,7 +795,7 @@ export const register: Register = (on, options) => {
       return { text: `Resuming from ${joinPath(found.dir, name)}` }
     }
 
-    return { text: 'Usage is /lsk [now|on|off|status|threshold <n>|folder [path|reset|status]|resume]' }
+    return { text: 'Usage is /lsk [now|on|off|status|threshold <n>|second <n|off>|folder [path|reset|status]|resume]' }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -689,13 +816,16 @@ export const register: Register = (on, options) => {
     const color = meter.percent >= cfg.threshold ? 'red' : meter.percent >= cfg.threshold - 10 ? 'yellow' : 'green'
     const icon = meter.percent >= cfg.threshold ? '●' : meter.percent >= cfg.threshold - 10 ? '◑' : '◔'
     const wide = e.props.bodyColumns >= 60
+    // Past the second threshold, with room to spare: the same suggestion the toast made.
+    const compact = cfg.isEnabled && cfg.second > 0 && meter.percent >= cfg.second && e.props.bodyColumns >= COMPACT_NOTE_COLUMNS
     const mine = (
       <Box flexDirection="row" paddingX={1}>
         <Text color={color} bold>
           {`${icon} ${meter.percent}%`}
         </Text>
         <Text dimColor>{` ${short(meter.tokens)}/${short(meter.window)}`}</Text>
-        {wide && <Text dimColor>{cfg.isEnabled ? `  ·  handoff at ${cfg.threshold}%` : '  ·  handoff off'}</Text>}
+        {wide && <Text dimColor>{cfg.isEnabled ? `  ·  ${thresholdText(cfg)}` : '  ·  handoff off'}</Text>}
+        {compact && <Text bold>{'  ·  consider /compact'}</Text>}
         {wide && act > 0 && <Text dimColor>{`  ·  cache ${cacheText(cfg, now - act)}`}</Text>}
         {offer > 0 && <Text dimColor>{`  ·  handoff from ${ago(now - offer)}: `}</Text>}
         {offer > 0 && <Text bold>/lsk resume</Text>}

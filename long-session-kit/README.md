@@ -2,7 +2,7 @@
 
 Original work by Matt Christensen. Part of [my-claude-mods](../README.md). The two ideas behind it, a context meter and an automatic handoff note, come from Mark Kashef's Claude Mods Starter Kit; no code was copied. See [CREDITS.md](../CREDITS.md).
 
-**What it does.** A context meter band, plus automatic handoff notes for long sessions. A handoff is written when the context window reaches a threshold (default 50%), when the prompt cache is about to go cold, and after an idle period (default 30 minutes). Each note costs one background model call.
+**What it does.** A context meter band, plus automatic handoff notes for long sessions. A handoff is written when the context window reaches a threshold (default 50%), when the prompt cache is about to go cold, and after an idle period (default 30 minutes). A second handoff is written when context reaches 70% (`secondThreshold`, 0 turns it off), and a toast then suggests compacting with `/compact` or continuing in a new chat with `/lsk resume`; the mod never runs `/compact` for you. Change it with `/lsk second <n|off>`. Each note costs one background model call.
 
 **Where handoffs go.** At the top level of the folder the session is linked to (the session's project root), as `handoff-<date>.md` plus `LATEST.md`. Handoffs may contain confidential information. If that folder is a git repository, add these lines to its `.gitignore` so they are never committed:
 
